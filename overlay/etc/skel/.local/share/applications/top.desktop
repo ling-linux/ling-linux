@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=System Monitor
+Name[zh_CN]=系统监视器
+Comment=Display system process information
+Comment[zh_CN]=显示系统进程信息
+Exec=foot -e top
+Terminal=false
+Categories=System;Monitor;

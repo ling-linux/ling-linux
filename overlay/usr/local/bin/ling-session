@@ -1,0 +1,12 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Ling Linux - User session wrapper
+# 由 ling-greeter 通过 greetd IPC 启动。
+# 参数: $1 = 用户名
+#
+# 注意：会话以普通用户身份运行，umount/cryptsetup/userdel 在此无权限执行。
+# 实际清理由 ling-greeter step0 在下一轮登录前以 root 身份完成。
+
+USERNAME="$1"
+exec dbus-run-session -- labwc

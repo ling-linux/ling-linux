@@ -1,0 +1,138 @@
+name: Build Ling Linux EFI
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_version:
+        description: 'Kernel version（留空则用 env.sh 的默认值）'
+        required: false
+        type: string
+      no_cache:
+        description: 'Skip all caches (clean rebuild)'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  # 需与 scripts/env.sh 中 KERNEL_VERSION 默认值保持同步
+  KERNEL_VERSION: ${{ inputs.kernel_version || '7.1.3' }}
+
+jobs:
+  build:
+    name: Build LingLinux.efi
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # --- Docker layer cache ---
+      - name: Restore Docker image
+        if: ${{ ! inputs.no_cache }}
+        uses: actions/cache@v4
+        with:
+          path: /tmp/docker-cache
+          key: docker-ling-linux-${{ hashFiles('Containerfile') }}
+          restore-keys: |
+            docker-ling-linux-
+
+      - name: Load cached Docker image
+        if: ${{ ! inputs.no_cache }}
+        run: |
+          if [ -f /tmp/docker-cache/ling-linux-builder.tar ]; then
+            docker load -i /tmp/docker-cache/ling-linux-builder.tar
+          fi
+
+      - name: Build container image
+        run: |
+          docker build \
+            --cache-from ling-linux-builder \
+            -t ling-linux-builder \
+            -f Containerfile \
+            .
+
+      - name: Save Docker image cache
+        if: ${{ ! inputs.no_cache }}
+        run: |
+          mkdir -p /tmp/docker-cache
+          docker save -o /tmp/docker-cache/ling-linux-builder.tar ling-linux-builder
+
+      # --- ccache for kernel compilation ---
+      - name: Restore ccache
+        if: ${{ ! inputs.no_cache }}
+        uses: actions/cache@v4
+        with:
+          path: /tmp/ccache
+          key: ccache-ling-linux-${{ env.KERNEL_VERSION }}-${{ hashFiles('scripts/03-kernel.sh') }}
+          restore-keys: |
+            ccache-ling-linux-${{ env.KERNEL_VERSION }}-
+            ccache-ling-linux-
+
+      - name: Prepare ccache directory
+        run: mkdir -p /tmp/ccache /tmp/kernel-src
+
+      # --- APK package cache ---
+      - name: Restore APK cache
+        if: ${{ ! inputs.no_cache }}
+        uses: actions/cache@v4
+        with:
+          path: /tmp/apk-cache
+          key: apk-cache-${{ hashFiles('config/packages.list') }}
+          restore-keys: |
+            apk-cache-
+
+      - name: Prepare APK cache directory
+        run: mkdir -p /tmp/apk-cache
+
+      # --- Kernel source cache (skip git clone) ---
+      - name: Restore kernel source cache
+        if: ${{ ! inputs.no_cache }}
+        uses: actions/cache@v4
+        with:
+          path: /tmp/kernel-src
+          key: kernel-src-${{ env.KERNEL_VERSION }}
+          restore-keys: |
+            kernel-src-${{ env.KERNEL_VERSION }}
+            kernel-src-
+
+      # --- Build ---
+      - name: Create output directory
+        run: mkdir -p output
+
+      - name: Build Ling Linux
+        run: |
+          CCACHE_VOLUME=""
+          KERNEL_VOLUME=""
+          if [ "${{ inputs.no_cache }}" != "true" ]; then
+            CCACHE_VOLUME="-v /tmp/ccache:/ccache"
+            KERNEL_VOLUME="-v /tmp/kernel-src:/build/linux"
+          fi
+          docker run --rm --privileged \
+            -v "$(pwd)/output:/build/output" \
+            $CCACHE_VOLUME \
+            $KERNEL_VOLUME \
+            -e KERNEL_VERSION="${KERNEL_VERSION}" \
+            -v /tmp/apk-cache:/apk-cache \
+            -e APK_CACHE_DIR=/apk-cache \
+            ling-linux-builder
+
+      # --- After build ---
+      - name: Verify output
+        run: |
+          echo "=== Output ==="
+          ls -lh output/
+          file output/LingLinux.efi || echo "EFI not found"
+          echo ""
+          echo "=== ccache stats ==="
+          du -sh /tmp/ccache/ 2>/dev/null || echo "ccache dir empty"
+          # Show ccache hit rate if ccache binary is available
+          CCACHE_DIR=/tmp/ccache ccache -s 2>/dev/null || true
+
+      - name: Upload EFI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LingLinux-efi
+          path: output/LingLinux.efi
+          retention-days: 7
+          compression-level: 0

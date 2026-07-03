@@ -1,0 +1,11 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# labwc shutdown — 会话退出时尝试清理 LUKS 挂载
+# 注意：脚本以普通用户身份运行，umount/cryptsetup 通常无权限；
+# 实际清理由 ling-greeter step0 在下一轮登录前以 root 完成。
+
+for dir in /home/*; do
+    mountpoint -q "$dir" 2>/dev/null && umount -l "$dir" 2>/dev/null
+done
+cryptsetup luksClose ling-vault 2>/dev/null

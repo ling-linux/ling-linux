@@ -1,0 +1,6 @@
+# Ling Linux - sudoers drop-in
+# Allow members of wheel group to run any command
+%wheel ALL=(ALL:ALL) ALL
+
+# Allow greetd user to poweroff/reboot without password
+greetd ALL=(ALL) NOPASSWD: /bin/busybox poweroff -f, /bin/busybox reboot -f

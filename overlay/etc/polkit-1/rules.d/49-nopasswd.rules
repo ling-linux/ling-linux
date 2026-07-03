@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// Ling Linux — polkit rules
+//
+// Allow wheel group members to perform any action without password.
+// Equivalent to "sudo NOPASSWD: ALL".
+
+polkit.addRule(function(action, subject) {
+    if (subject.isInGroup("wheel")) {
+        return polkit.Result.YES;
+    }
+});

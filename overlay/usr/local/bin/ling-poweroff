@@ -1,0 +1,17 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Ling Linux - 关机前清理包装
+# 替换 labwc 菜单中的 busybox poweroff -f
+#
+# 注意：脚本可能以普通用户身份运行，umount/cryptsetup 在此无权限。
+# 实际清理由 ling-greeter step0 在下一轮登录前以 root 完成。
+# poweroff -f 是强制关机，无需干净的 LUKS 关闭。
+
+for dir in /home/*; do
+    mountpoint -q "$dir" 2>/dev/null && umount -l "$dir" 2>/dev/null
+done
+cryptsetup luksClose ling-vault 2>/dev/null
+
+# 执行关机
+exec /bin/busybox poweroff -f

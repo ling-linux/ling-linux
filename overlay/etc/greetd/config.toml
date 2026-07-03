@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Ling Linux - greetd configuration
+#
+
+[terminal]
+vt = 1
+
+[default_session]
+command = "labwc -C '/usr/local/lib/ling-labwc-login-config' -S '/usr/local/bin/ling-greeter'"
+user = "root"

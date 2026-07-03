@@ -1,0 +1,148 @@
+#!/bin/sh
+set -e
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Ling Linux - greetd greeter
+# 以 root 身份运行，由 labwc + greetd 启动。
+#
+# 系统用户（getent passwd 存在）直接走 PAM 认证。
+# 外部用户则先选加密镜像、LUKS 解密、挂载家目录、创建账户、再认证。
+
+GREETD_SOCK="${GREETD_SOCK:?GREETD_SOCK 未设置}"
+
+# 错误展示
+show_error() {
+    zenity --error --width=400 --text="$1" || true
+}
+
+# ─── 清理残留挂载与用户 ───────────────────────────────────────
+cleanup_mounts() {
+    for dir in /home/*; do
+        [ -d "$dir" ] || continue
+        username=$(basename "$dir")
+        mountpoint -q "$dir" 2>/dev/null && umount -l "$dir" 2>/dev/null || true
+        # 删除上一会话残留的非系统用户（UID >= 1000）
+        uid=$(getent passwd "$username" 2>/dev/null | cut -d: -f3)
+        if [ -n "$uid" ] && [ "$uid" -ge 1000 ] 2>/dev/null; then
+            userdel -r "$username" 2>/dev/null || true
+        fi
+    done
+    umount /tmp/ling-data 2>/dev/null || true
+    dmsetup remove ling-vault 2>/dev/null || true
+}
+
+# ─── 主循环 ──────────────────────────────────────────────────────
+while true; do
+    cleanup_mounts
+
+    # ── 1. 用户名 + 密码 ──
+    cred=$(zenity --forms --title="灵 Linux" --width=350 \
+        --add-entry="用户名" --add-password="密码" \
+        --text="请输入登录凭据" \
+        --ok-label="登录" --cancel-label="重启")
+    case $? in
+        0) ;;
+        1) /bin/busybox reboot -f ;;
+        *) exit 0 ;;
+    esac
+
+    username=$(echo "$cred" | cut -d'|' -f1)
+    password=$(echo "$cred" | cut -d'|' -f2-)
+    [ -z "$username" ] && continue
+    [ -z "$password" ] && { show_error "密码不能为空"; continue; }
+
+    # ── 2. 路径分叉 ──
+    if getent passwd "$username" >/dev/null 2>&1; then
+        # 系统用户：直接 IPC 认证
+        if echo "$password" | ling-greetd-ipc login "$GREETD_SOCK" "$username" \
+            /usr/local/bin/ling-session "$username" 2>/tmp/ling-login-error; then
+            rm -f /tmp/ling-login-error
+            exit 0
+        fi
+        show_error "$(cat /tmp/ling-login-error 2>/dev/null || echo '认证失败')"
+        rm -f /tmp/ling-login-error
+        continue
+    fi
+
+    # 外部用户：选分区 → 选镜像 → LUKS 解密
+
+    # ── 3. 分区选择 ──
+    part_list=$(lsblk -no NAME,SIZE,FSTYPE,LABEL 2>/dev/null | awk '$3!=""{
+        label=$4;
+        if(label=="") label=$1;
+        printf "%s|%s|%s|%s\n", $1, $2, $3, label
+    }')
+    if [ -z "$part_list" ]; then
+        show_error "未检测到任何可挂载的分区"
+        continue
+    fi
+
+    partition=$(echo "$part_list" | zenity --list --title="选择数据分区" \
+        --width=550 --height=350 \
+        --column="设备" --column="大小" --column="文件系统" --column="卷标" \
+        --print-column=1 \
+        --ok-label="选择" --cancel-label="返回" 2>/dev/null)
+    [ $? -ne 0 ] && continue
+    [ -z "$partition" ] && continue
+
+    # ── 4. 挂载分区并选镜像 ──
+    mkdir -p /tmp/ling-data
+    if ! mount "/dev/$partition" /tmp/ling-data 2>/dev/null; then
+        show_error "无法挂载 /dev/$partition"
+        continue
+    fi
+
+    img=$(zenity --file-selection --title="选择用户空间文件" \
+        --filename="/tmp/ling-data/" \
+        --file-filter="Ling 镜像 (*.img) | *.img" \
+        --ok-label="选择" --cancel-label="返回" 2>/dev/null)
+    if [ $? -ne 0 ]; then
+        umount /tmp/ling-data 2>/dev/null
+        continue
+    fi
+    [ -z "$img" ] && { umount /tmp/ling-data 2>/dev/null; continue; }
+
+    # ── 5. LUKS 解密（分区须保持挂载，文件路径才有效）──
+    if ! echo "$password" | cryptsetup luksOpen "$img" ling-vault 2>/dev/null; then
+        umount /tmp/ling-data 2>/dev/null
+        show_error "密码错误或文件损坏"
+        continue
+    fi
+
+    # ── 6. 挂载 ext4（此时可卸载数据分区）──
+    mkdir -p "/home/$username"
+    if ! mount /dev/mapper/ling-vault "/home/$username" 2>/dev/null; then
+        cryptsetup luksClose ling-vault 2>/dev/null
+        umount /tmp/ling-data 2>/dev/null
+        show_error "无法挂载用户空间"
+        continue
+    fi
+    # 数据分区不再需要挂载，LUKS 已持有了 fd
+    umount /tmp/ling-data 2>/dev/null || true
+
+    # ── 7. 验证 .ling-user ──
+    if ! grep -qx "$username" "/home/$username/.ling-user" 2>/dev/null; then
+        umount "/home/$username" 2>/dev/null
+        cryptsetup luksClose ling-vault 2>/dev/null
+        show_error "用户空间与账户不匹配"
+        continue
+    fi
+
+    # ── 8. 创建用户 ──
+    useradd -m "$username" 2>/dev/null || true
+    echo "$username:$password" | chpasswd 2>/dev/null || true
+
+    # ── 9. greetd IPC 认证 ──
+    if echo "$password" | ling-greetd-ipc login "$GREETD_SOCK" "$username" \
+        /usr/local/bin/ling-session "$username" 2>/tmp/ling-login-error; then
+        rm -f /tmp/ling-login-error
+        exit 0
+    fi
+
+    # 认证失败，回滚
+    umount "/home/$username" 2>/dev/null || true
+    cryptsetup luksClose ling-vault 2>/dev/null || true
+    userdel -r "$username" 2>/dev/null || true
+    show_error "$(cat /tmp/ling-login-error 2>/dev/null || echo '认证失败')"
+    rm -f /tmp/ling-login-error
+done

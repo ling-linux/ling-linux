@@ -1,0 +1,141 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Ling Linux - Init Script
+#
+
+# Early boot: stdout/stderr may not be available until devtmpfs is mounted.
+# Use /dev/kmsg for early messages if possible, otherwise suppress errors.
+msg() {
+    echo "$*" 2>/dev/null || true
+    echo "$*" > /dev/kmsg 2>/dev/null || true
+}
+
+msg "=== 灵 Linux (Ling Linux) ==="
+msg "Minimal Bootable EFI"
+
+# --- Helpers ---
+warn()  { echo "[init] WARNING: $*"; }
+fail()  { msg  "[init] ERROR: $*"; }
+
+# Mount essential kernel filesystems
+msg "[init] Mounting kernel filesystems..."
+mount -t proc proc /proc 2>/dev/null      || fail "Failed to mount /proc"
+mount -t sysfs sysfs /sys 2>/dev/null     || fail "Failed to mount /sys"
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || fail "Failed to mount /dev"
+msg "[init] Kernel filesystems mounted."
+
+# At this point /dev/console should be available via devtmpfs
+# Redirect stdout/stderr to console
+exec > /dev/console 2>&1
+
+# Set default PATH for all processes
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Mount shared memory, temp, and PTY (required by labwc/wlroots and terminals)
+mkdir -p /dev/shm 2>/dev/null && mount -t tmpfs tmpfs /dev/shm 2>/dev/null || warn "Failed to mount /dev/shm"
+mkdir -p /dev/pts 2>/dev/null && mount -t devpts devpts /dev/pts 2>/dev/null || warn "Failed to mount /dev/pts"
+mkdir -p /tmp     2>/dev/null && mount -t tmpfs tmpfs /tmp     2>/dev/null || warn "Failed to mount /tmp"
+
+# Load 层峦 (cengluan) TTY font for Chinese character support
+if [ -f /usr/share/consolefonts/cengluan.psfu.gz ] && command -v setfont >/dev/null 2>&1; then
+    setfont /usr/share/consolefonts/cengluan.psfu.gz 2>/dev/null || warn "Failed to load console font"
+fi
+
+# Populate /dev via eudev (coldplug)
+if [ -x /sbin/udevd ]; then
+    echo "[init] Starting device manager..."
+    /sbin/udevd --daemon 2>/dev/null                              || warn "udevd failed to start"
+    /sbin/udevadm trigger --type=devices --action=add 2>/dev/null || warn "udevadm trigger failed"
+    /sbin/udevadm settle --timeout=5 2>/dev/null                  || warn "udevadm settle timed out"
+    echo "[init] Device manager initialized."
+fi
+
+# --- Setup runtime directories ---
+echo "[init] Setting up runtime directories..."
+export XDG_RUNTIME_DIR=/run/user/0
+mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null || warn "Failed to create $XDG_RUNTIME_DIR"
+chmod 0700 "$XDG_RUNTIME_DIR" 2>/dev/null || warn "Failed to chmod $XDG_RUNTIME_DIR"
+
+# Ensure XDG_RUNTIME_DIR for greetd user (greetd's pam_rundir will set this,
+# but pre-creating ensures correct ownership before the first session)
+mkdir -p /run/user/997 2>/dev/null || true
+chown 997:997 /run/user/997 2>/dev/null || true
+chmod 0700 /run/user/997 2>/dev/null || true
+
+# --- Initialize OpenRC ---
+# OpenRC requires /run/openrc/softlevel to exist before rc commands work.
+# Without it, all rc-* commands refuse with "openrc did not boot" error.
+mkdir -p /run/openrc
+touch /run/openrc/softlevel
+
+# --- Ensure D-Bus runtime directory exists ---
+mkdir -p /run/dbus
+chown dbus:dbus /run/dbus 2>/dev/null || true
+
+# --- Start D-Bus first, wait for socket ---
+# D-Bus must be fully ready before elogind/polkit/greetd.
+# OpenRC will skip already-started services when openrc default runs later.
+echo "[init] Starting D-Bus system bus..."
+if /sbin/rc-service dbus start 2>/dev/null; then
+    TIMEOUT=50
+    while [ ! -S /run/dbus/system_bus_socket ] && [ $TIMEOUT -gt 0 ]; do
+        usleep 100000 2>/dev/null || sleep 0.1 2>/dev/null || sleep 1
+        TIMEOUT=$((TIMEOUT - 1))
+    done
+    if [ -S /run/dbus/system_bus_socket ]; then
+        echo "[init] D-Bus system bus ready."
+    else
+        warn "D-Bus socket not available after timeout — elogind/polkit will fail."
+    fi
+else
+    warn "Failed to start D-Bus — elogind/polkit will fail."
+fi
+
+# --- Start remaining services via OpenRC ---
+# Services are registered to runlevels during build (apk add --root runs
+# post-install scripts including rc-update add). OpenRC handles dependency
+# ordering: greetd waits for seatd, seatd waits for udev, polkitd waits
+# for dbus, etc.
+echo "[init] Starting system services..."
+if ! /sbin/openrc default; then
+    warn "openrc default failed — checking critical services..."
+    for svc in dbus seatd greetd; do
+        rc-service "$svc" status 2>/dev/null && echo "[init]   $svc: running" || echo "[init]   $svc: NOT running"
+    done
+fi
+
+# --- Start getty terminals (manual) ---
+# tty2 for fallback text login
+(
+    while true; do
+        /sbin/getty 38400 tty2
+        sleep 1
+    done
+) &
+
+# Serial console for debugging
+if [ -c /dev/ttyS0 ]; then
+    (
+        while true; do
+            /sbin/getty 38400 ttyS0
+            sleep 1
+        done
+    ) &
+fi
+
+# PID 1 must never exit. Handle shutdown signals.
+shutdown() {
+    echo "Shutting down..."
+    sync
+    umount -a -r 2>/dev/null || true
+}
+
+trap 'shutdown; /bin/busybox reboot -f' USR1
+trap 'shutdown; /bin/busybox poweroff -f' USR2
+trap 'shutdown; /bin/busybox halt -f' TERM
+
+while true; do
+    sleep 3600 &
+    wait $!
+done

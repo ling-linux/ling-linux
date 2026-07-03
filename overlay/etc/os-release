@@ -1,0 +1,5 @@
+NAME="灵 Linux"
+ID=ling-linux
+ID_LIKE=alpine
+PRETTY_NAME="灵 Linux"
+HOME_URL="https://github.com/ling-linux/ling-linux"

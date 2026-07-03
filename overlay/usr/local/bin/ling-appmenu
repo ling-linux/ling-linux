@@ -1,0 +1,3 @@
+#!/bin/sh
+# 如果当前用户的 wofi 未运行，则运行 wofi，否则关闭 wofi
+if ! pgrep -x -u "$USER" "wofi" > /dev/null; then wofi --show=drun -i -I --location=1 --prompt=Q & else pkill -u "$USER" wofi; fi

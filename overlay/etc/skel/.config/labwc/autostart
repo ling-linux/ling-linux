@@ -1,0 +1,61 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Ling Linux - labwc autostart
+# Launched by labwc on session start.
+#
+
+# Background
+swaybg -c '#78909C' >/dev/null 2>&1 &
+
+# XFCE configuration daemon (required by xfce4-panel and thunar)
+if command -v xfconfd >/dev/null 2>&1; then
+    xfconfd &
+fi
+
+# XFCE settings daemon (theme, keyboard, mouse, etc.)
+if command -v xfsettingsd >/dev/null 2>&1; then
+    xfsettingsd &
+fi
+
+# PipeWire audio service
+if command -v pipewire >/dev/null 2>&1; then
+    pipewire &
+fi
+if command -v wireplumber >/dev/null 2>&1; then
+    wireplumber &
+fi
+
+# Polkit authentication agent (GUI password prompts)
+if [ -x /usr/libexec/polkit-mate-authentication-agent-1 ]; then
+    /usr/libexec/polkit-mate-authentication-agent-1 &
+fi
+
+# XFCE panel
+# Per labwc integration guide: force all plugins to run as internal
+# (https://labwc.github.io/integration.html#xfce4panel)
+if command -v xfce4-panel >/dev/null 2>&1; then
+    if command -v xfconf-query >/dev/null 2>&1; then
+        xfconf-query -c xfce4-panel -p /force-all-internal \
+            -t bool -s true --create 2>/dev/null
+    fi
+    xfce4-panel &
+fi
+
+# Fcitx5 input method
+if command -v fcitx5 >/dev/null 2>&1; then
+    fcitx5 -d &
+fi
+
+# Notification daemon
+if command -v mako >/dev/null 2>&1; then
+    mako &
+fi
+
+# Network and bluetooth tray icons
+if command -v iwgtk >/dev/null 2>&1; then
+    iwgtk -i &
+fi
+if command -v blueman-applet >/dev/null 2>&1; then
+    blueman-applet &
+fi

@@ -1,0 +1,67 @@
+# $OpenBSD: sshd_config,v 1.104 2021/07/02 05:11:21 dtucker Exp $
+
+# This is the sshd server system-wide configuration file.  See
+# sshd_config(5) for more information.
+
+# Supported HostKey algorithms
+HostKey /etc/ssh/ssh_host_ed25519_key
+HostKey /etc/ssh/ssh_host_rsa_key
+HostKey /etc/ssh/ssh_host_ecdsa_key
+
+# Logging
+LogLevel INFO
+
+# Authentication:
+PermitRootLogin no
+PermitEmptyPasswords no
+PasswordAuthentication yes
+PubkeyAuthentication yes
+
+# Change to yes to enable challenge-response passwords (beware issues with
+# some PAM modules and threads)
+ChallengeResponseAuthentication no
+
+# Kerberos options
+#KerberosAuthentication no
+#KerberosOrLocalPasswd yes
+#KerberosTicketCleanup yes
+#KerberosGetAFSToken no
+
+# GSSAPI options
+#GSSAPIAuthentication no
+#GSSAPICleanupCredentials yes
+
+# Allow client to pass locale environment variables
+AcceptEnv LANG LC_*
+
+# TCP port
+Port 22
+
+# Address family
+AddressFamily any
+
+# Listen address
+#ListenAddress 0.0.0.0
+#ListenAddress ::
+
+# Subsystem
+Subsystem sftp /usr/lib/ssh/sftp-server
+
+# Max start ups
+MaxStartups 10:30:100
+
+# Login grace time
+LoginGraceTime 2m
+
+# Client alive interval
+ClientAliveInterval 0
+ClientAliveCountMax 3
+
+# Compression
+Compression no
+
+# X11 forwarding
+X11Forwarding no
+
+# Banner
+#Banner /etc/issue.net

@@ -1,0 +1,11 @@
+output/
+test/
+.git/
+.gitignore
+.dockerignore
+README.md
+reference/
+kernel-src/
+kernel-src.tar.xz
+.github/
+AGETNS.md

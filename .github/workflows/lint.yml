@@ -1,0 +1,80 @@
+name: Lint
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  shellcheck:
+    name: Shell syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dash
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq dash
+
+      - name: Check all shell scripts
+        run: |
+          echo "=== Checking shell scripts with dash -n ==="
+          FAILED=0
+          for f in \
+            scripts/*.sh \
+            overlay/init \
+            overlay/etc/profile.d/ling.sh \
+          ; do
+            if [ ! -f "$f" ]; then
+              echo "  SKIP: $f (not found)"
+              continue
+            fi
+            if dash -n "$f" 2>&1; then
+              echo "  PASS: $f"
+            else
+              echo "  FAIL: $f"
+              FAILED=1
+            fi
+          done
+          if [ "$FAILED" -ne 0 ]; then
+            echo ""
+            echo "ERROR: Some scripts failed dash -n check."
+            exit 1
+          fi
+          echo ""
+          echo "All shell scripts passed syntax check."
+
+  bashisms:
+    name: No bashisms
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install checkbashisms
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq devscripts
+
+      - name: Check for bashisms
+        run: |
+          echo "=== Checking for bashisms ==="
+          FAILED=0
+          for f in \
+            scripts/*.sh \
+            overlay/init \
+            overlay/etc/profile.d/ling.sh \
+          ; do
+            if [ ! -f "$f" ]; then
+              continue
+            fi
+            if checkbashisms "$f" 2>&1; then
+              echo "  PASS: $f"
+            else
+              FAILED=1
+            fi
+          done
+          if [ "$FAILED" -ne 0 ]; then
+            echo ""
+            echo "ERROR: Some scripts contain bashisms."
+            exit 1
+          fi
+          echo ""
+          echo "No bashisms found."
