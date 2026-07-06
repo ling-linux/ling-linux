@@ -36,15 +36,16 @@
     │    3. .img 文件选择                             │
     └──────────────────────────────────────────────┘
                        │
-              LUKS 解密 │ ext4 挂载
+              LUKS 解密 │ ext4 挂载 + bind mount
                        ▼
     ┌──────────────────────────────────────────────┐
     │   外部分区                                     │
     │   └─ alice-ling.img (LUKS2 + ext4, 稀疏文件)   │
     │        ├─ .ling-user ("alice")                │
-    │        ├─ .bashrc, .profile, ...              │
-    │        ├─ .config/                             │
-    │        └─ .nix-store/  (Nix store 物理目录)     │
+    │        └─ home/                                │
+    │             ├─ .bashrc, .profile, ...          │
+    │             ├─ .config/                        │
+    │             └─ .nix-store/                     │
     └──────────────────────────────────────────────┘
 ```
 
@@ -73,9 +74,12 @@ getent passwd "$username"
        ├─ 选 .img 文件 (zenity --file-selection)
        ├─ 卸载分区
        ├─ cryptsetup luksOpen "$img" ling-vault
-       ├─ mount /dev/mapper/ling-vault /home/$username
-       ├─ 比对 /home/$username/.ling-user
+       ├─ mount /dev/mapper/ling-vault /tmp/ling-user-$$
+       ├─ 比对 /tmp/ling-user-$$/.ling-user
        ├─ useradd -m $username
+       ├─ mount --bind /tmp/ling-user-$$/home /home/$username
+       ├─ umount /tmp/ling-user-$$
+       ├─ chown -R $username:$username /home/$username
        ├─ echo "$username:$password" | chpasswd
        └─ IPC create_session → PAM → start_session
 ```
@@ -97,16 +101,27 @@ root 密码已锁定（`!`），禁止直接登录，仅 wheel 用户可通过 `
 - **容器格式**：单个稀疏 `.img` 文件，动态增长
 - **加密**：LUKS2 (Linux Unified Key Setup)，`cryptsetup luksFormat` + `luksOpen`
 - **内部文件系统**：ext4（内核内置，日志可靠）
-- **内核支持**：需启用 `DM_CRYPT`（当前在 `scripts/03-kernel.sh:211` 中被禁用）
+- **内核支持**：需启用 `DM_CRYPT`（已在 `scripts/03-kernel.sh:211` 中启用）
 - **密码**：与用户 PAM 登录密码相同。greeter 不校验密码强度或空值，由 LUKS 和 PAM 各自决定
 
 ### 3.3 用户身份校验
 
 镜像 ext4 根目录放置 `.ling-user` 文件，内容为所属用户名（纯文本，一行）。
-Greeter 解密挂载后读取比对，防止 Alice 的镜像被 Bob 误挂载。
+Greeter 解密后先挂载到临时路径，读取比对身份文件，再通过 bind mount
+将镜像的 `home/` 子目录暴露到 `/home/$username`。
 
 ```
-/home/alice/.ling-user  →  "alice"
+镜像根/.ling-user  →  "alice"
+镜像根/home/      →  (经由 bind mount 暴露为 /home/alice/)
+```
+
+运行时挂载点结构：
+
+```
+/tmp/ling-user-$$/        ← 镜像直接挂载点
+  ├─ .ling-user           ← 身份验证文件
+  └─ home/                ← 用户数据根
+       └─ (经由 mount --bind → /home/alice/)
 ```
 
 ---
@@ -182,7 +197,54 @@ echo "$password" | ling-greetd-ipc login "$GREETD_SOCK" "$username" \
 3. 收到 `success` 后 → `start_session` 启动 ling-session
 4. 断开连接，返回结果码
 
-### 4.5 Greeter 启动时的清理
+### 4.5 Greeter 挂载新架构（适用于新用户登录）
+
+当用户首次登录时（`getent passwd` 不存在），greeter 使用如下流程处理 LUKS 镜像：
+
+```sh
+# 1. 解密并挂载到临时路径（非用户家目录）
+cryptsetup luksOpen "$IMG" "$MAPPER_NAME"
+mkdir -p "$TMP_MNT"
+mount "/dev/mapper/$MAPPER_NAME" "$TMP_MNT"
+
+# 2. 验证身份
+grep -qx "$USERNAME" "$TMP_MNT/.ling-user"
+
+# 3. 创建系统用户
+useradd -m "$USERNAME"
+
+# 4. bind mount 将镜像 home 暴露为用户家目录
+mount --bind "$TMP_MNT/home" "/home/$USERNAME"
+
+# 5. 清理临时直接挂载点（bind mount 保持文件系统活跃）
+umount "$TMP_MNT" && rmdir "$TMP_MNT"
+
+# 6. 修复用户所有权（P0 修复：镜像 root 创建的文件需 chown）
+chown -R "$USERNAME:$USERNAME" "/home/$USERNAME"
+
+# 7. PAM 改密与 IPC 认证
+echo "$USERNAME:$PASSWORD" | chpasswd
+echo "$PASSWORD" | ling-greetd-ipc login "$GREETD_SOCK" "$USERNAME" \
+    /usr/local/bin/ling-session "$USERNAME"
+```
+
+### 4.6 创建辅助工具
+
+通过 `ling-mkuserimg`（独立工具）创建新的 LUKS 镜像，而非由 greeter 创建。
+详见 `docs/design-ling-mkuserimg.md`。
+
+使用方式：
+
+```sh
+# 后端（可脚本化）
+echo "$pass" | ling-mkuserimg --image /mnt/sda1/alice.img \
+    --size 4G --username alice --password-stdin
+
+# 前端向导（交互式用户界面）
+ling-mkuserimg-wizard
+```
+
+### 4.7 Greeter 启动时的清理
 
 第 0 步：由 `cleanup_mounts()` 在每轮主循环开始时以 root 身份执行，清理上一会话残留：
 
@@ -203,7 +265,7 @@ cleanup_mounts() {
 }
 ```
 
-### 4.6 错误处理
+### 4.8 错误处理
 
 | 错误场景           | 处理                                              | 后续              |
 | ------------------ | ------------------------------------------------- | ----------------- |
@@ -315,22 +377,13 @@ export PATH="$HOME/.nix-profile/bin:$PATH"
 
 ```
 cryptsetup
+e2fsprogs
 zenity
 ```
 
 ### 8.2 内核配置 (`scripts/03-kernel.sh`)
 
-第 210–211 行：
-
-```sh
-# 旧
-kernel_disable BLK_DEV_DM
-kernel_disable DM_CRYPT
-
-# 新
-kernel_enable BLK_DEV_DM
-kernel_enable DM_CRYPT
-```
+`DM_CRYPT` 已在 `scripts/03-kernel.sh:211` 中启用，无需更改。
 
 ### 8.3 RootFS 构建 (`scripts/02-rootfs.sh`)
 
@@ -358,12 +411,17 @@ wget -q "https://github.com/ling-linux/ling-greetd-ipc/releases/latest/download/
 
 ### 9.1 需要新建的文件
 
-| 文件                                       | 说明                        |
-| ------------------------------------------ | --------------------------- |
-| `overlay/usr/local/bin/ling-greeter`         | Shell greeter 主脚本        |
-| `overlay/usr/local/bin/ling-poweroff`        | 关机前清理包装              |
-| `overlay/etc/profile.d/nix.sh`               | Nix 环境变量                |
-| `docs/design-user-space.md`                  | 本文档                      |
+| 文件                                       | 说明                                     |
+| ------------------------------------------ | ---------------------------------------- |
+| `overlay/usr/local/bin/ling-greeter`         | Shell greeter 主脚本                     |
+| `overlay/usr/local/bin/ling-poweroff`        | 关机前清理包装                           |
+| `overlay/usr/local/bin/ling-mkuserimg`       | 后端：创建 LUKS2 用户镜像（含参数解析）     |
+| `overlay/usr/local/bin/ling-mkuserimg-wizard`| 前端：zenity / CLI 交互式向导             |
+| `overlay/etc/profile.d/nix.sh`               | Nix 环境变量                             |
+| `docs/design-user-space.md`                  | 本文档                                   |
+| `docs/design-ling-mkuserimg.md`              | 镜像创建工具设计文档                |
+| `test/test_mkuserimg.sh`                     | 后端单元测试（参数与校验逻辑）            |
+| `test/test_mkuserimg_integration.sh`         | 集成测试（真实镜像创建，需 root）            |
 
 ### 9.2 需要修改的现有文件
 
@@ -392,7 +450,7 @@ wget -q "https://github.com/ling-linux/ling-greetd-ipc/releases/latest/download/
 | 项目              | 说明                                                                                                      | 接口                                                              |
 | ----------------- | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
 | `ling-greetd-ipc`   | C 程序，封装 greetd IPC 认证与会话启动。密码通过 stdin 传入。              | `echo 密码 \| ling-greetd-ipc login <socket> <username> <cmd> [args...]` |
-| 镜像创建工具      | root 下创建 LUKS2 ext4 稀疏镜像，写入 `.ling-user` 和 skel 骨架                                              | 独立程序，greeter 不集成                                           |
+| `ling-mkuserimg`    | Shell 脚本，创建 LUKS2 ext4 稀疏用户镜像，写入 `.ling-user` 和 skel 骨架。详见 `docs/design-ling-mkuserimg.md` | 后端：`ling-mkuserimg --image PATH --size SIZE --username NAME --password-stdin`；前端：`ling-mkuserimg-wizard` |
 
 ---
 
@@ -404,7 +462,6 @@ wget -q "https://github.com/ling-linux/ling-greetd-ipc/releases/latest/download/
 | ---------------- | ---------------------------------------------------- |
 | root 登录          | root 密码已锁定（`!`），禁止直接登录。wheel 用户可通过 `sudo su` 或 `sudo -i` 获取 root 权限 |
 | 密码修改         | LUKS 和 PAM 密码绑定后不支持独立修改                  |
-| 镜像创建工具     | 独立项目，用户在首次使用时先以 root 登录后调用       |
 | Nix 用户引导       | Nix 预装后用户如何使用（文档 / 教程）                |
 | SSH 多用户场景   | 非桌面登录场景不做处理（SSH 无 greeter 介入）        |
 | 初始化 ramdisk 大小 | 加入 Nix (~50MB) 和 cryptsetup 后需验证内存占用可接受 |

@@ -1,0 +1,153 @@
+#!/bin/sh
+# ling-mkuserimg — 创建 LUKS2 加密 ext4 稀疏用户镜像
+#
+# 接口：
+#   ling-mkuserimg --image PATH --size SIZE --username NAME --password-stdin
+#                  [--skel PATH] [--force] [--verbose]
+#
+# 退出码：0 成功（stdout 输出镜像路径），1 失败（stderr 输出错误原因）
+
+set -e
+
+# ── 消息输出函数 ──
+die()  { echo "错误: $*" >&2; exit 1; }
+info() { [ -n "$VERBOSE" ] && echo "[ling-mkuserimg] $*" >&2 || true; }
+
+# ── 默认参数 ──
+SKEL_PATH="/etc/skel"
+FORCE=""
+VERBOSE=""
+IMAGE=""
+SIZE=""
+USERNAME=""
+
+# ── 解析命令行参数 ──
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --image)           IMAGE="$2";      shift 2 ;;
+        --size)            SIZE="$2";       shift 2 ;;
+        --username)        USERNAME="$2";   shift 2 ;;
+        --password-stdin)  PASSWORD_STDIN=1; shift  ;;
+        --skel)            SKEL_PATH="$2";  shift 2 ;;
+        --force)           FORCE=1;         shift  ;;
+        --verbose)         VERBOSE=1;       shift  ;;
+        *) die "未知参数: $1" ;;
+    esac
+done
+
+# ── 参数完整性校验 ──
+[ -z "$IMAGE" ]          && die "缺少 --image 参数"
+[ -z "$SIZE" ]           && die "缺少 --size 参数"
+[ -z "$USERNAME" ]       && die "缺少 --username 参数"
+[ -z "$PASSWORD_STDIN" ] && die "缺少 --password-stdin 参数"
+
+# ── 权限校验 ──
+[ "$(id -u)" -ne 0 ] && die "需要 root 权限运行"
+
+# ── 用户名合法性校验（POSIX 用户名规范）──
+if ! echo "$USERNAME" | grep -qE '^[a-z_][a-z0-9_-]{0,31}$'; then
+    die "非法用户名: $USERNAME（须以 a-z 或 _ 起始，长度 1-32）"
+fi
+
+# ── 密码非空校验 ──
+PASSWORD=$(cat)
+if [ -z "$PASSWORD" ]; then
+    die "密码不能为空"
+fi
+
+# ── 依赖工具检查 ──
+for cmd in cryptsetup mkfs.ext4 truncate; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        die "缺少系统工具: $cmd"
+    fi
+done
+
+# ── skel 路径规范化 ──
+SKEL_PATH=$(realpath "$SKEL_PATH" 2>/dev/null) || die "skel 路径无效: $SKEL_PATH"
+[ -d "$SKEL_PATH" ] || die "skel 路径不是目录: $SKEL_PATH"
+
+# ── 镜像父目录检查 ──
+PARENT_DIR=$(dirname "$IMAGE")
+[ -d "$PARENT_DIR" ] || die "镜像父目录不存在: $PARENT_DIR"
+[ -w "$PARENT_DIR" ] || die "镜像父目录不可写: $PARENT_DIR"
+
+# ── 目标文件存在性检查 ──
+if [ -f "$IMAGE" ] && [ -z "$FORCE" ]; then
+    die "目标文件已存在: $IMAGE（使用 --force 覆盖）"
+fi
+
+# ── 大小格式校验 ──
+if ! echo "$SIZE" | grep -qE '^[0-9]+[KMGTPEZ]?$'; then
+    die "非法大小格式: $SIZE（示例: 4G, 512M）"
+fi
+
+# ── 磁盘空间检查 ──
+SIZE_BYTES=$(echo "$SIZE" | awk '
+    /[0-9]+G/ { printf "%.0f", $1 * 1073741824 }
+    /[0-9]+M/ { printf "%.0f", $1 * 1048576 }
+    /[0-9]+K/ { printf "%.0f", $1 * 1024 }
+    /^[0-9]+$/ { print $1 }
+')
+AVAIL_BYTES=$(df -B1 --output=avail "$PARENT_DIR" 2>/dev/null | tail -n1)
+if [ -n "$AVAIL_BYTES" ] && [ "$SIZE_BYTES" -gt "$AVAIL_BYTES" ] 2>/dev/null; then
+    die "磁盘空间不足: 需要 $SIZE，可用 $(numfmt --to=iec "$AVAIL_BYTES" 2>/dev/null || echo "$AVAIL_BYTES 字节")"
+fi
+
+# ── 清理函数（异常路径）──
+RND=$(od -An -N2 -tu2 < /dev/urandom | tr -d ' ')
+DM_NAME="ling-mkimg-$$-$RND"
+MNT="/tmp/ling-mkuserimg-$$-$RND"
+
+cleanup() {
+    umount "$MNT" 2>/dev/null || umount -l "$MNT" 2>/dev/null
+    sleep 0.5
+    cryptsetup luksClose "$DM_NAME" 2>/dev/null || dmsetup remove "$DM_NAME" 2>/dev/null || true
+    rm -rf "$MNT" 2>/dev/null
+}
+trap cleanup EXIT INT TERM
+
+# ── 1. 创建稀疏文件 + 设置权限 ──
+info "创建稀疏文件 ($SIZE): $IMAGE"
+truncate -s "$SIZE" "$IMAGE" || die "创建稀疏文件失败"
+chmod 600 "$IMAGE"
+
+# ── 2. LUKS 格式化 ──
+info "LUKS2 格式化: $IMAGE"
+echo "$PASSWORD" | cryptsetup luksFormat --batch-mode \
+    --type luks2 \
+    --cipher aes-xts-plain64 \
+    --key-size 512 \
+    --pbkdf argon2id \
+    --iter-time 2000 \
+    --luks-label ling-vault \
+    "$IMAGE" || die "LUKS2 格式化失败"
+
+# ── 3. LUKS 打开 ──
+info "打开 LUKS 设备: $DM_NAME"
+echo "$PASSWORD" | cryptsetup luksOpen "$IMAGE" "$DM_NAME" || die "LUKS 设备打开失败"
+
+# ── 4. 创建 ext4 文件系统 ──
+info "创建 ext4 文件系统（无保留块）"
+mkfs.ext4 -m 0 "/dev/mapper/$DM_NAME" >/dev/null 2>&1 || die "mkfs.ext4 失败"
+
+# ── 5. 挂载 ──
+mkdir -p "$MNT"
+mount "/dev/mapper/$DM_NAME" "$MNT" || die "挂载 ext4 失败"
+
+# ── 6. 复制 skel 骨架 ──
+info "复制 skel 骨架: $SKEL_PATH → $MNT/home/"
+mkdir -p "$MNT/home"
+cp -a "$SKEL_PATH"/. "$MNT/home"/ || die "复制 skel 骨架失败"
+
+# ── 7. 写入身份文件 ──
+info "写入 .ling-user: $USERNAME"
+echo "$USERNAME" > "$MNT/.ling-user" || die "写入 .ling-user 失败"
+
+# ── 8. 主动清理（成功路径）──
+info "清理: 卸载 + 关闭 LUKS"
+umount "$MNT" && cryptsetup luksClose "$DM_NAME" && rm -rf "$MNT"
+trap - EXIT INT TERM
+
+# ── 9. 输出结果 ──
+echo "$IMAGE"
+exit 0

@@ -112,6 +112,7 @@ btrfs-progs
 xfsprogs
 exfatprogs
 cryptsetup
+e2fsprogs
 
 # =============================================
 # 截图
