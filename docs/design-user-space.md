@@ -72,8 +72,8 @@ getent passwd "$username"
        ├─ 选分区 (lsblk -f 列出 FSTYPE 非空分区)
        ├─ 挂载分区到 /tmp/ling-data
        ├─ 选 .img 文件 (zenity --file-selection)
-       ├─ 卸载分区
        ├─ cryptsetup luksOpen "$img" ling-vault
+       ├─ 卸载分区（LUKS 已持有文件描述符）
        ├─ mount /dev/mapper/ling-vault /tmp/ling-user-$$
        ├─ 比对 /tmp/ling-user-$$/.ling-user
        ├─ useradd -m $username

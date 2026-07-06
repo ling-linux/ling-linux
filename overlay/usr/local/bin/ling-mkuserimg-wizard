@@ -40,7 +40,7 @@ run_cli() {
     done
 
     # 步骤 2: 大小
-    AVAIL=$(df -B1 --output=avail "$PARENT" 2>/dev/null | tail -n1)
+    AVAIL=$(df -B1 "$PARENT" 2>/dev/null | awk 'NR==2 {print $4}')
     if [ -n "$AVAIL" ] && [ "$AVAIL" -gt 0 ] 2>/dev/null; then
         DEFAULT_G=$(awk -v a="$AVAIL" 'BEGIN { printf "%.0f", a * 0.7 / 1073741824 }')
         [ "${DEFAULT_G:-0}" -lt 1 ] && DEFAULT_G=1
@@ -69,10 +69,7 @@ run_cli() {
         stty echo
         echo ""
         if [ -z "$PASSWORD" ]; then
-            echo "注意: 密码为空，将不设密码保护"
-            printf "确认使用空密码? [y/N]: "
-            read -r CONFIRM
-            [ "$CONFIRM" = "y" ] || [ "$CONFIRM" = "Y" ] && break
+            echo "密码不能为空，请设置密码。"
             continue
         fi
         printf "确认密码: "
@@ -102,7 +99,7 @@ run_cli() {
 
     # 执行
     echo "正在创建..."
-    echo "$PASSWORD" | "$BACKEND" \
+    printf '%s\n' "$PASSWORD" | "$BACKEND" \
         --image "$IMAGE_PATH" \
         --size "$SIZE" \
         --username "$USERNAME" \
@@ -124,7 +121,7 @@ run_gui() {
     PARENT=$(dirname "$IMAGE_PATH")
 
     # 步骤 2: 选择大小
-    AVAIL=$(df -B1 --output=avail "$PARENT" 2>/dev/null | tail -n1)
+    AVAIL=$(df -B1 "$PARENT" 2>/dev/null | awk 'NR==2 {print $4}')
     if [ -n "$AVAIL" ] && [ "$AVAIL" -gt 0 ] 2>/dev/null; then
         DEFAULT_G=$(awk -v a="$AVAIL" 'BEGIN { printf "%.0f", a * 0.7 / 1073741824 }')
         [ "${DEFAULT_G:-0}" -lt 1 ] && DEFAULT_G=1
@@ -135,7 +132,7 @@ run_gui() {
 
     SIZE_CHOICE=$(zenity --list --radiolist \
         --title="灵 Linux — 选择镜像容量" \
-        --text="分区可用: $(df -h --output=avail "$PARENT" 2>/dev/null | tail -n1 | tr -d ' ') \n下方推荐大小为分区 70% 空闲" \
+        --text="分区可用: $(df -h "$PARENT" 2>/dev/null | awk 'NR==2 {print $4}') \n下方推荐大小为分区 70% 空闲" \
         --column="" --column="大小" \
         TRUE  "$DEFAULT_LABEL" \
         FALSE "512M" \
@@ -159,16 +156,22 @@ run_gui() {
 
     # 步骤 3: 用户名
     while true; do
-        USERNAME=$(zenity --forms --title="灵 Linux — 设置用户信息" \
+        RAW=$(zenity --forms --title="灵 Linux — 设置用户信息" \
             --text="输入用户名和 LUKS 加密密码" \
             --add-entry="用户名 (a-z, 0-9, -, _)" \
             --add-password="密码" \
             --add-password="确认密码" \
-            --width=400 2>/dev/null | tr '|' '\n') || { echo "取消"; exit 0; }
+            --width=400 2>/dev/null) || { echo "取消"; exit 0; }
 
-        USERNAME=$(echo "$USERNAME" | sed -n '1p')
-        PASSWORD=$(echo "$USERNAME" | sed -n '2p')
-        PASSWORD2=$(echo "$USERNAME" | sed -n '3p')
+        # 防御: zenity --forms 输出以 | 分隔，若密码含 | 则字段数异常
+        PIPE_COUNT=$(printf '%s\n' "$RAW" | tr -cd '|' | wc -c)
+        if [ "$PIPE_COUNT" -ne 2 ]; then
+            zenity --error --text="用户名或密码不得包含 '|' 字符，请修改后重试。" 2>/dev/null
+            continue
+        fi
+        USERNAME=$(printf '%s\n' "$RAW" | cut -d'|' -f1)
+        PASSWORD=$(printf '%s\n' "$RAW" | cut -d'|' -f2)
+        PASSWORD2=$(printf '%s\n' "$RAW" | cut -d'|' -f3)
 
         if ! echo "$USERNAME" | grep -qE '^[a-z_][a-z0-9_-]{0,31}$'; then
             zenity --error --text="用户名格式不合法。\n须为小写字母或下划线起始，长度 1-32，\n只含 a-z, 0-9, -, _。" 2>/dev/null
@@ -176,7 +179,8 @@ run_gui() {
         fi
 
         if [ -z "$PASSWORD" ]; then
-            zenity --warning --text="密码为空，镜像将无密码保护。\n建议设置密码以保护数据安全。" 2>/dev/null
+            zenity --error --text="密码不能为空，请设置密码。" 2>/dev/null
+            continue
         fi
 
         if [ "$PASSWORD" != "$PASSWORD2" ]; then
@@ -200,17 +204,17 @@ run_gui() {
         --width=400 2>/dev/null || { echo "取消创建"; exit 0; }
 
     # 步骤 5: 执行
-    echo "$PASSWORD" | "$BACKEND" \
+    ERROR_LOG="/tmp/ling-mkuserimg-error.wizard.$$"
+    printf '%s\n' "$PASSWORD" | "$BACKEND" \
         --image "$IMAGE_PATH" \
         --size "$SIZE" \
         --username "$USERNAME" \
         --password-stdin \
         $OVERWRITE_FLAG \
-        --verbose 2>/tmp/ling-mkuserimg-error.$$ &
+        --verbose 2>"$ERROR_LOG" &
     BACKEND_PID=$!
 
     # 震荡进度条
-    ERROR_LOG="/tmp/ling-mkuserimg-error.$$"
     ( while kill -0 "$BACKEND_PID" 2>/dev/null; do
         echo "# 正在创建镜像..."
         sleep 0.1
@@ -221,15 +225,16 @@ run_gui() {
     wait "$BACKEND_PID"
     BACKEND_EXIT=$?
 
-    rm -f "$ERROR_LOG"
-
     if [ "$BACKEND_EXIT" -eq 0 ]; then
+        rm -f "$ERROR_LOG"
         zenity --info --title="灵 Linux" \
             --text="✅ 镜像创建成功！\n\n$IMAGE_PATH\n\n现在可以注销并以此用户重新登录。" \
             --width=400 2>/dev/null
     else
+        ERR_MSG=$(head -c 500 "$ERROR_LOG" 2>/dev/null || echo "未知错误")
+        rm -f "$ERROR_LOG"
         zenity --error --title="灵 Linux — 创建失败" \
-            --text="镜像创建失败，请检查日志或重试。" \
+            --text="镜像创建失败:\n$ERR_MSG" \
             --width=400 2>/dev/null
         exit 1
     fi

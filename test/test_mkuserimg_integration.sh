@@ -63,12 +63,15 @@ OUTPUT=$(echo "testpass123" | "$MKUSERIMG" \
 echo ""
 echo "=== 测试 2: 验证 LUKS2 内容 ==="
 
-DM_NAME="ling-test-$$-$RANDOM"
-MNT="/tmp/ling-test-mnt-$$-$RANDOM"
+RND=$(od -An -N2 -tu2 < /dev/urandom | tr -d ' ')
+DM_NAME="ling-test-$$-$RND"
+MNT="/tmp/ling-test-mnt-$$-$RND"
 
 cleanup_test2() {
-    umount "$MNT" 2>/dev/null || umount -l "$MNT" 2>/dev/null || true
-    sleep 0.5
+    if ! umount "$MNT" 2>/dev/null; then
+        umount -l "$MNT" 2>/dev/null
+        sleep 0.5
+    fi
     cryptsetup luksClose "$DM_NAME" 2>/dev/null || dmsetup remove "$DM_NAME" 2>/dev/null || true
     rm -rf "$MNT" 2>/dev/null
 }

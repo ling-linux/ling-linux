@@ -253,8 +253,8 @@ echo "$PASSWORD" | ling-mkuserimg \
 ```
 1. 选分区 → 挂载到 /tmp/ling-data
 2. 选 .img
-3. 卸载分区
-4. cryptsetup luksOpen "$img" ling-vault
+3. cryptsetup luksOpen "$img" ling-vault
+4. 卸载分区（LUKS 已持有文件描述符，可安全卸载）
 5. mount /dev/mapper/ling-vault /tmp/ling-user-$$  ← 新：挂到临时路径
 6. grep -qx "$username" /tmp/ling-user-$$/.ling-user                ← 验证身份
 7. useradd -m "$username"

@@ -50,6 +50,7 @@ if ! echo "$USERNAME" | grep -qE '^[a-z_][a-z0-9_-]{0,31}$'; then
 fi
 
 # ── 密码非空校验 ──
+[ -t 0 ] && die "--password-stdin 必须通过管道提供密码"
 PASSWORD=$(cat)
 if [ -z "$PASSWORD" ]; then
     die "密码不能为空"
@@ -77,7 +78,7 @@ if [ -f "$IMAGE" ] && [ -z "$FORCE" ]; then
 fi
 
 # ── 大小格式校验 ──
-if ! echo "$SIZE" | grep -qE '^[0-9]+[KMGTPEZ]?$'; then
+if ! echo "$SIZE" | grep -qE '^[0-9]+[KMG]?$'; then
     die "非法大小格式: $SIZE（示例: 4G, 512M）"
 fi
 
@@ -88,9 +89,9 @@ SIZE_BYTES=$(echo "$SIZE" | awk '
     /[0-9]+K/ { printf "%.0f", $1 * 1024 }
     /^[0-9]+$/ { print $1 }
 ')
-AVAIL_BYTES=$(df -B1 --output=avail "$PARENT_DIR" 2>/dev/null | tail -n1)
+AVAIL_BYTES=$(df -B1 "$PARENT_DIR" 2>/dev/null | awk 'NR==2 {print $4}')
 if [ -n "$AVAIL_BYTES" ] && [ "$SIZE_BYTES" -gt "$AVAIL_BYTES" ] 2>/dev/null; then
-    die "磁盘空间不足: 需要 $SIZE，可用 $(numfmt --to=iec "$AVAIL_BYTES" 2>/dev/null || echo "$AVAIL_BYTES 字节")"
+    die "磁盘空间不足: 需要 $SIZE，可用 $(echo "$AVAIL_BYTES" | awk '{printf "%.1fG", $1/1073741824}' 2>/dev/null || echo "$AVAIL_BYTES 字节")"
 fi
 
 # ── 清理函数（异常路径）──
@@ -99,8 +100,10 @@ DM_NAME="ling-mkimg-$$-$RND"
 MNT="/tmp/ling-mkuserimg-$$-$RND"
 
 cleanup() {
-    umount "$MNT" 2>/dev/null || umount -l "$MNT" 2>/dev/null
-    sleep 0.5
+    if ! umount "$MNT" 2>/dev/null; then
+        umount -l "$MNT" 2>/dev/null
+        sleep 0.5
+    fi
     cryptsetup luksClose "$DM_NAME" 2>/dev/null || dmsetup remove "$DM_NAME" 2>/dev/null || true
     rm -rf "$MNT" 2>/dev/null
 }
@@ -113,7 +116,7 @@ chmod 600 "$IMAGE"
 
 # ── 2. LUKS 格式化 ──
 info "LUKS2 格式化: $IMAGE"
-echo "$PASSWORD" | cryptsetup luksFormat --batch-mode \
+printf '%s\n' "$PASSWORD" | cryptsetup luksFormat --batch-mode \
     --type luks2 \
     --cipher aes-xts-plain64 \
     --key-size 512 \
@@ -124,7 +127,7 @@ echo "$PASSWORD" | cryptsetup luksFormat --batch-mode \
 
 # ── 3. LUKS 打开 ──
 info "打开 LUKS 设备: $DM_NAME"
-echo "$PASSWORD" | cryptsetup luksOpen "$IMAGE" "$DM_NAME" || die "LUKS 设备打开失败"
+printf '%s\n' "$PASSWORD" | cryptsetup luksOpen "$IMAGE" "$DM_NAME" || die "LUKS 设备打开失败"
 
 # ── 4. 创建 ext4 文件系统 ──
 info "创建 ext4 文件系统（无保留块）"

@@ -61,7 +61,7 @@ while true; do
     # ── 2. 路径分叉 ──
     if getent passwd "$username" >/dev/null 2>&1; then
         # 系统用户：直接 IPC 认证
-        if echo "$password" | ling-greetd-ipc login "$GREETD_SOCK" "$username" \
+        if printf '%s\n' "$password" | ling-greetd-ipc login "$GREETD_SOCK" "$username" \
             /usr/local/bin/ling-session "$username" 2>/tmp/ling-login-error; then
             rm -f /tmp/ling-login-error
             exit 0
@@ -110,14 +110,14 @@ while true; do
     [ -z "$img" ] && { umount /tmp/ling-data 2>/dev/null; continue; }
 
     # ── 5. LUKS 解密（分区须保持挂载，文件路径才有效）──
-    if ! echo "$password" | cryptsetup luksOpen "$img" ling-vault 2>/dev/null; then
+    if ! printf '%s\n' "$password" | cryptsetup luksOpen "$img" ling-vault 2>/dev/null; then
         umount /tmp/ling-data 2>/dev/null
         show_error "密码错误或文件损坏"
         continue
     fi
 
     # ── 6. 挂载 ext4 到临时路径（此时可卸载数据分区）──
-    TMP_MNT="/tmp/ling-user-$$"
+    TMP_MNT=$(mktemp -d /tmp/ling-user-XXXXXX)
     mkdir -p "$TMP_MNT"
     if ! mount /dev/mapper/ling-vault "$TMP_MNT" 2>/dev/null; then
         cryptsetup luksClose ling-vault 2>/dev/null
@@ -153,10 +153,10 @@ while true; do
 
     # ── 9. 修复用户所有权（镜像由 root 创建，须 chown）──
     chown -R "$username:$username" "/home/$username" 2>/dev/null || true
-    echo "$username:$password" | chpasswd 2>/dev/null || true
+    printf '%s\n' "$username:$password" | chpasswd 2>/dev/null || true
 
     # ── 10. greetd IPC 认证 ──
-    if echo "$password" | ling-greetd-ipc login "$GREETD_SOCK" "$username" \
+    if printf '%s\n' "$password" | ling-greetd-ipc login "$GREETD_SOCK" "$username" \
         /usr/local/bin/ling-session "$username" 2>/tmp/ling-login-error; then
         rm -f /tmp/ling-login-error
         exit 0
