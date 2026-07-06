@@ -227,12 +227,18 @@ kernel_disable KPROBES
 kernel_disable UPROBES
 kernel_disable BPF_SYSCALL
 
-# Security modules
+# Security modules — 纵深防御 (defence in depth)
+# Landlock: 非特权自沙箱，零用户空间依赖，glycin/bwrap 降级保护
+kernel_enable SECURITY_LANDLOCK
+# Lockdown: 阻止 root 篡改内核内存 (/dev/mem/模块加载/EFI)，integrity 模式
+kernel_enable SECURITY_LOCKDOWN_LSM
+kernel_enable SECURITY_LOCKDOWN_LSM_EARLY
+# Yama: ptrace 隔离，防止恶意进程注入同 UID 其他进程
+kernel_enable SECURITY_YAMA
+# 保持禁用 — 无生态支持或与项目架构不匹配
 kernel_disable SECURITY_SELINUX
 kernel_disable SECURITY_APPARMOR
 kernel_disable SECURITY_TOMOYO
-kernel_disable SECURITY_LOCKDOWN_LSM
-kernel_disable SECURITY_LANDLOCK
 kernel_disable INTEGRITY
 
 # Cgroups / namespaces

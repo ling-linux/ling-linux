@@ -25,6 +25,12 @@ mount -t sysfs sysfs /sys 2>/dev/null     || fail "Failed to mount /sys"
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || fail "Failed to mount /dev"
 msg "[init] Kernel filesystems mounted."
 
+# 纵深防御：运行时 LSM 配置
+# Yama ptrace 限制 — 仅祖先进程可 ptrace 后代，桌面环境零影响
+echo 1 > /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || true
+# Lockdown 切换到 integrity 模式，阻止 /dev/mem 写入和未签名模块加载
+echo integrity > /sys/kernel/security/lockdown 2>/dev/null || true
+
 # At this point /dev/console should be available via devtmpfs
 # Redirect stdout/stderr to console
 exec > /dev/console 2>&1
