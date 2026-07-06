@@ -29,6 +29,13 @@ cleanup_mounts() {
     done
     umount /tmp/ling-data 2>/dev/null || true
     dmsetup remove ling-vault 2>/dev/null || true
+
+    # 清理上轮残留的临时镜像挂载点
+    for tmp_mnt in /tmp/ling-user-*; do
+        [ -d "$tmp_mnt" ] || continue
+        umount -l "$tmp_mnt" 2>/dev/null || true
+        rmdir "$tmp_mnt" 2>/dev/null || true
+    done
 }
 
 # ─── 主循环 ──────────────────────────────────────────────────────
@@ -109,9 +116,10 @@ while true; do
         continue
     fi
 
-    # ── 6. 挂载 ext4（此时可卸载数据分区）──
-    mkdir -p "/home/$username"
-    if ! mount /dev/mapper/ling-vault "/home/$username" 2>/dev/null; then
+    # ── 6. 挂载 ext4 到临时路径（此时可卸载数据分区）──
+    TMP_MNT="/tmp/ling-user-$$"
+    mkdir -p "$TMP_MNT"
+    if ! mount /dev/mapper/ling-vault "$TMP_MNT" 2>/dev/null; then
         cryptsetup luksClose ling-vault 2>/dev/null
         umount /tmp/ling-data 2>/dev/null
         show_error "无法挂载用户空间"
@@ -120,19 +128,34 @@ while true; do
     # 数据分区不再需要挂载，LUKS 已持有了 fd
     umount /tmp/ling-data 2>/dev/null || true
 
-    # ── 7. 验证 .ling-user ──
-    if ! grep -qx "$username" "/home/$username/.ling-user" 2>/dev/null; then
-        umount "/home/$username" 2>/dev/null
+    # ── 7. 验证 .ling-user（镜像根目录）──
+    if ! grep -qx "$username" "$TMP_MNT/.ling-user" 2>/dev/null; then
+        umount "$TMP_MNT" 2>/dev/null
+        rmdir "$TMP_MNT" 2>/dev/null || true
         cryptsetup luksClose ling-vault 2>/dev/null
         show_error "用户空间与账户不匹配"
         continue
     fi
 
-    # ── 8. 创建用户 ──
+    # ── 8. 创建系统用户并 bind mount 镜像 home ──
     useradd -m "$username" 2>/dev/null || true
+    if ! mount --bind "$TMP_MNT/home" "/home/$username" 2>/dev/null; then
+        umount "$TMP_MNT" 2>/dev/null
+        rmdir "$TMP_MNT" 2>/dev/null || true
+        cryptsetup luksClose ling-vault 2>/dev/null
+        userdel -r "$username" 2>/dev/null || true
+        show_error "无法绑定用户家目录"
+        continue
+    fi
+    # 卸载临时直接挂载点（bind mount 保持文件系统活跃）
+    umount "$TMP_MNT" 2>/dev/null || true
+    rmdir "$TMP_MNT" 2>/dev/null || true
+
+    # ── 9. 修复用户所有权（镜像由 root 创建，须 chown）──
+    chown -R "$username:$username" "/home/$username" 2>/dev/null || true
     echo "$username:$password" | chpasswd 2>/dev/null || true
 
-    # ── 9. greetd IPC 认证 ──
+    # ── 10. greetd IPC 认证 ──
     if echo "$password" | ling-greetd-ipc login "$GREETD_SOCK" "$username" \
         /usr/local/bin/ling-session "$username" 2>/tmp/ling-login-error; then
         rm -f /tmp/ling-login-error

@@ -1,0 +1,242 @@
+#!/bin/sh
+# ling-mkuserimg-wizard — 交互式用户镜像创建向导
+#
+# Zenity GUI（优先）+ CLI 回退。收集参数后调用 ling-mkuserimg。
+#
+# 前置：root 权限。zenity 不可用时自动回退到 CLI。
+
+set -e
+
+# ── 工具路径 ──
+BACKEND="ling-mkuserimg"
+
+# ── 检测 GUI 模式 ──
+if command -v zenity >/dev/null 2>&1 && [ -n "${DISPLAY}${WAYLAND_DISPLAY}" ]; then
+    MODE=gui
+else
+    MODE=cli
+fi
+
+# ── 前置校验 ──
+[ "$(id -u)" -eq 0 ] || { echo "请以 root 身份运行本工具" >&2; exit 1; }
+command -v "$BACKEND" >/dev/null 2>&1 || { echo "找不到 $BACKEND，请确认环境" >&2; exit 1; }
+
+# ═══════════════════════════════════════════
+# CLI 模式
+# ═══════════════════════════════════════════
+run_cli() {
+    echo "══ 灵 Linux 用户镜像创建向导 ══"
+    echo ""
+
+    # 步骤 1: 镜像路径
+    while true; do
+        printf "镜像存储路径: "
+        read -r IMAGE_PATH
+        PARENT=$(dirname "$IMAGE_PATH")
+        if [ -d "$PARENT" ] && [ -w "$PARENT" ]; then
+            break
+        fi
+        echo "目录 $PARENT 不存在或不可写，请重新输入"
+    done
+
+    # 步骤 2: 大小
+    AVAIL=$(df -B1 --output=avail "$PARENT" 2>/dev/null | tail -n1)
+    if [ -n "$AVAIL" ] && [ "$AVAIL" -gt 0 ] 2>/dev/null; then
+        DEFAULT_G=$(awk -v a="$AVAIL" 'BEGIN { printf "%.0f", a * 0.7 / 1073741824 }')
+        [ "${DEFAULT_G:-0}" -lt 1 ] && DEFAULT_G=1
+        printf "镜像大小 (推荐 ${DEFAULT_G}G，约分区 70%% 空闲): "
+    else
+        printf "镜像大小 (例: 4G, 512M): "
+    fi
+    read -r SIZE
+    [ -z "$SIZE" ] && [ -n "${DEFAULT_G:-}" ] && SIZE="${DEFAULT_G}G"
+
+    # 步骤 3: 用户名
+    while true; do
+        printf "用户名 (小写字母/数字/-/_): "
+        read -r USERNAME
+        if echo "$USERNAME" | grep -qE '^[a-z_][a-z0-9_-]{0,31}$'; then
+            break
+        fi
+        echo "用户名格式不合法，请重新输入"
+    done
+
+    # 步骤 4: 密码
+    while true; do
+        printf "LUKS 密码 (不会回显): "
+        stty -echo
+        read -r PASSWORD
+        stty echo
+        echo ""
+        if [ -z "$PASSWORD" ]; then
+            echo "注意: 密码为空，将不设密码保护"
+            printf "确认使用空密码? [y/N]: "
+            read -r CONFIRM
+            [ "$CONFIRM" = "y" ] || [ "$CONFIRM" = "Y" ] && break
+            continue
+        fi
+        printf "确认密码: "
+        stty -echo
+        read -r PASSWORD2
+        stty echo
+        echo ""
+        if [ "$PASSWORD" = "$PASSWORD2" ]; then
+            break
+        fi
+        echo "两次密码不一致，请重试"
+    done
+
+    # 步骤 5: 确认
+    OVERWRITE_FLAG=""
+    if [ -f "$IMAGE_PATH" ]; then
+        OVERWRITE_FLAG="--force"
+        printf '⚠  文件已存在: %s，将被覆盖。继续? [y/N]: ' "$IMAGE_PATH"
+    else
+        printf '══ 确认信息 ══\n路径: %s\n大小: %s\n用户: %s\n\n创建? [y/N]: ' "$IMAGE_PATH" "$SIZE" "$USERNAME"
+    fi
+    read -r CONFIRM
+    case "$CONFIRM" in
+        [yY]*) ;;
+        *) echo "已取消"; exit 0 ;;
+    esac
+
+    # 执行
+    echo "正在创建..."
+    echo "$PASSWORD" | "$BACKEND" \
+        --image "$IMAGE_PATH" \
+        --size "$SIZE" \
+        --username "$USERNAME" \
+        --password-stdin \
+        $OVERWRITE_FLAG \
+        --verbose
+    echo "✅ 创建完成: $IMAGE_PATH"
+}
+
+# ═══════════════════════════════════════════
+# GUI 模式
+# ═══════════════════════════════════════════
+run_gui() {
+    # 步骤 1: 选择镜像路径
+    IMAGE_PATH=$(zenity --file-selection --save --confirm-overwrite \
+        --title="灵 Linux — 选择镜像存储位置" \
+        --filename="/mnt/" 2>/dev/null) || { echo "取消选择路径"; exit 0; }
+
+    PARENT=$(dirname "$IMAGE_PATH")
+
+    # 步骤 2: 选择大小
+    AVAIL=$(df -B1 --output=avail "$PARENT" 2>/dev/null | tail -n1)
+    if [ -n "$AVAIL" ] && [ "$AVAIL" -gt 0 ] 2>/dev/null; then
+        DEFAULT_G=$(awk -v a="$AVAIL" 'BEGIN { printf "%.0f", a * 0.7 / 1073741824 }')
+        [ "${DEFAULT_G:-0}" -lt 1 ] && DEFAULT_G=1
+        DEFAULT_LABEL="${DEFAULT_G}G (推荐)"
+    else
+        DEFAULT_LABEL="4G (推荐)"
+    fi
+
+    SIZE_CHOICE=$(zenity --list --radiolist \
+        --title="灵 Linux — 选择镜像容量" \
+        --text="分区可用: $(df -h --output=avail "$PARENT" 2>/dev/null | tail -n1 | tr -d ' ') \n下方推荐大小为分区 70% 空闲" \
+        --column="" --column="大小" \
+        TRUE  "$DEFAULT_LABEL" \
+        FALSE "512M" \
+        FALSE "1G" \
+        FALSE "2G" \
+        FALSE "4G" \
+        FALSE "8G" \
+        FALSE "16G" \
+        FALSE "32G" \
+        FALSE "64G" \
+        FALSE "自定义大小..." \
+        --width=400 --height=420 2>/dev/null) || { echo "取消选择大小"; exit 0; }
+
+    case "$SIZE_CHOICE" in
+        *自定义*) SIZE=$(zenity --entry --title="自定义大小" \
+            --text="输入大小 (例: 4G, 512M):" 2>/dev/null) || exit 0 ;;
+        *\(*) SIZE=$(echo "$SIZE_CHOICE" | sed 's/ .*//') ;;
+        *)    SIZE="$SIZE_CHOICE" ;;
+    esac
+    [ -z "$SIZE" ] && { zenity --error --text="大小不能为空" 2>/dev/null; exit 1; }
+
+    # 步骤 3: 用户名
+    while true; do
+        USERNAME=$(zenity --forms --title="灵 Linux — 设置用户信息" \
+            --text="输入用户名和 LUKS 加密密码" \
+            --add-entry="用户名 (a-z, 0-9, -, _)" \
+            --add-password="密码" \
+            --add-password="确认密码" \
+            --width=400 2>/dev/null | tr '|' '\n') || { echo "取消"; exit 0; }
+
+        USERNAME=$(echo "$USERNAME" | sed -n '1p')
+        PASSWORD=$(echo "$USERNAME" | sed -n '2p')
+        PASSWORD2=$(echo "$USERNAME" | sed -n '3p')
+
+        if ! echo "$USERNAME" | grep -qE '^[a-z_][a-z0-9_-]{0,31}$'; then
+            zenity --error --text="用户名格式不合法。\n须为小写字母或下划线起始，长度 1-32，\n只含 a-z, 0-9, -, _。" 2>/dev/null
+            continue
+        fi
+
+        if [ -z "$PASSWORD" ]; then
+            zenity --warning --text="密码为空，镜像将无密码保护。\n建议设置密码以保护数据安全。" 2>/dev/null
+        fi
+
+        if [ "$PASSWORD" != "$PASSWORD2" ]; then
+            zenity --error --text="两次密码不一致，请重新输入。" 2>/dev/null
+            continue
+        fi
+        break
+    done
+
+    # 步骤 4: 确认
+    WARNING=""
+    OVERWRITE_FLAG=""
+    if [ -f "$IMAGE_PATH" ]; then
+        OVERWRITE_FLAG="--force"
+        WARNING="⚠  文件已存在，将被覆盖\n\n"
+    fi
+
+    zenity --question --title="灵 Linux — 确认创建" \
+        --text="${WARNING}镜像路径: $IMAGE_PATH\n容量: $SIZE\n用户名: $USERNAME\n\n确认创建？" \
+        --ok-label="创建" --cancel-label="取消" \
+        --width=400 2>/dev/null || { echo "取消创建"; exit 0; }
+
+    # 步骤 5: 执行
+    echo "$PASSWORD" | "$BACKEND" \
+        --image "$IMAGE_PATH" \
+        --size "$SIZE" \
+        --username "$USERNAME" \
+        --password-stdin \
+        $OVERWRITE_FLAG \
+        --verbose 2>/tmp/ling-mkuserimg-error.$$ &
+    BACKEND_PID=$!
+
+    # 震荡进度条
+    ERROR_LOG="/tmp/ling-mkuserimg-error.$$"
+    ( while kill -0 "$BACKEND_PID" 2>/dev/null; do
+        echo "# 正在创建镜像..."
+        sleep 0.1
+    done ) | zenity --progress --pulsate --auto-close \
+        --title="灵 Linux" --text="正在创建加密镜像..." \
+        --no-cancel --width=400 2>/dev/null
+
+    wait "$BACKEND_PID"
+    BACKEND_EXIT=$?
+
+    rm -f "$ERROR_LOG"
+
+    if [ "$BACKEND_EXIT" -eq 0 ]; then
+        zenity --info --title="灵 Linux" \
+            --text="✅ 镜像创建成功！\n\n$IMAGE_PATH\n\n现在可以注销并以此用户重新登录。" \
+            --width=400 2>/dev/null
+    else
+        zenity --error --title="灵 Linux — 创建失败" \
+            --text="镜像创建失败，请检查日志或重试。" \
+            --width=400 2>/dev/null
+        exit 1
+    fi
+}
+
+# ── 入口 ──
+case "$MODE" in
+    gui) run_gui ;;
+    cli) run_cli ;;
+esac
