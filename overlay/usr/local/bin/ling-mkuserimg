@@ -122,7 +122,7 @@ printf '%s\n' "$PASSWORD" | cryptsetup luksFormat --batch-mode \
     --key-size 512 \
     --pbkdf argon2id \
     --iter-time 2000 \
-    --luks-label ling-vault \
+    --label ling-vault \
     "$IMAGE" || die "LUKS2 格式化失败"
 
 # ── 3. LUKS 打开 ──
