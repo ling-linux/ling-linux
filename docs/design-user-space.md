@@ -80,6 +80,9 @@ getent passwd "$username"
        └─ IPC create_session → PAM → start_session
 ```
 
+密码由 LUKS 和 PAM 各自独立校验，greeter 不做密码强度或空密码策略限制。
+root 密码已锁定（`!`），禁止直接登录，仅 wheel 用户可通过 `sudo su` 提升权限。
+
 ---
 
 ## 3. 加密与存储方案
@@ -95,7 +98,7 @@ getent passwd "$username"
 - **加密**：LUKS2 (Linux Unified Key Setup)，`cryptsetup luksFormat` + `luksOpen`
 - **内部文件系统**：ext4（内核内置，日志可靠）
 - **内核支持**：需启用 `DM_CRYPT`（当前在 `scripts/03-kernel.sh:211` 中被禁用）
-- **密码**：与用户 PAM 登录密码相同
+- **密码**：与用户 PAM 登录密码相同。greeter 不校验密码强度或空值，由 LUKS 和 PAM 各自决定
 
 ### 3.3 用户身份校验
 
@@ -399,7 +402,7 @@ wget -q "https://github.com/ling-linux/ling-greetd-ipc/releases/latest/download/
 
 | 事项             | 说明                                                 |
 | ---------------- | ---------------------------------------------------- |
-| root 密码设置      | 当前 root 密码为空（调试便利），后续需设置密码       |
+| root 登录          | root 密码已锁定（`!`），禁止直接登录。wheel 用户可通过 `sudo su` 或 `sudo -i` 获取 root 权限 |
 | 密码修改         | LUKS 和 PAM 密码绑定后不支持独立修改                  |
 | 镜像创建工具     | 独立项目，用户在首次使用时先以 root 登录后调用       |
 | Nix 用户引导       | Nix 预装后用户如何使用（文档 / 教程）                |
