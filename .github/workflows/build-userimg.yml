@@ -1,0 +1,74 @@
+name: Build External User Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      username:
+        description: '用户名（须以 a-z 或 _ 起始，长度 1-32）'
+        required: false
+        default: 'ling'
+        type: string
+      password:
+        description: 'LUKS 加密密码（注意：工作流日志中可能可见）'
+        required: false
+        default: 'ling'
+        type: string
+      image_size:
+        description: '镜像大小（示例：1024M, 2G）'
+        required: false
+        default: '1024M'
+        type: string
+
+jobs:
+  build-userimg:
+    name: Build User Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cryptsetup-bin e2fsprogs
+
+      - name: Create output directory
+        run: mkdir -p output
+
+      - name: Create user image
+        run: |
+          echo "${{ inputs.password }}" | sudo overlay/usr/local/bin/ling-mkuserimg \
+            --image output/user.img \
+            --size "${{ inputs.image_size }}" \
+            --username "${{ inputs.username }}" \
+            --skel overlay/etc/skel \
+            --password-stdin \
+            --verbose
+        # 将密码写入脚本日志。安全说明：GitHub Actions 的 workflow_dispatch 输入
+        # 不推荐传递敏感凭据；生产环境请用 Actions secrets 替代 inputs.password。
+
+      - name: Verify image
+        run: |
+          echo "=== 镜像信息 ==="
+          ls -lh output/user.img
+          file output/user.img || true
+          echo ""
+          echo "实际磁盘占用（稀疏文件）:"
+          du -h output/user.img
+
+      - name: Compress image
+        run: |
+          echo "正在压缩镜像..."
+          xz -9 -T0 output/user.img
+          echo "=== 压缩结果 ==="
+          ls -lh output/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: user-image-${{ inputs.username }}
+          path: output/user.img.xz
+          retention-days: 7
+          compression-level: 0
