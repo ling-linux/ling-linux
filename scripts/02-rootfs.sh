@@ -131,10 +131,9 @@ fi
 # --- Setup essential configs ---
 echo "ling-linux" > "$ROOTFS_DIR/etc/hostname"
 
-# Lock root password — no direct login.
-# Wheel users can use sudo su / sudo -i instead.
+# Set empty root password (allow login without password)
 if [ -f "$ROOTFS_DIR/etc/shadow" ]; then
-    sed -i 's/^root:[^:]*:/root:!:/' "$ROOTFS_DIR/etc/shadow"
+    sed -i 's/^root:[^:]*:/root::/' "$ROOTFS_DIR/etc/shadow"
 fi
 
 # --- Install 层峦 (cengluan) TTY font ---

@@ -49,6 +49,7 @@ while true; do
     username=$(echo "$cred" | cut -d'|' -f1)
     password=$(echo "$cred" | cut -d'|' -f2-)
     [ -z "$username" ] && continue
+    [ -z "$password" ] && { show_error "密码不能为空"; continue; }
 
     # ── 2. 路径分叉 ──
     if getent passwd "$username" >/dev/null 2>&1; then

@@ -84,9 +84,6 @@ getent passwd "$username"
        └─ IPC create_session → PAM → start_session
 ```
 
-密码由 LUKS 和 PAM 各自独立校验，greeter 不做密码强度或空密码策略限制。
-root 密码已锁定（`!`），禁止直接登录，仅 wheel 用户可通过 `sudo su` 提升权限。
-
 ---
 
 ## 3. 加密与存储方案
@@ -460,7 +457,7 @@ wget -q "https://github.com/ling-linux/ling-greetd-ipc/releases/latest/download/
 
 | 事项             | 说明                                                 |
 | ---------------- | ---------------------------------------------------- |
-| root 登录          | root 密码已锁定（`!`），禁止直接登录。wheel 用户可通过 `sudo su` 或 `sudo -i` 获取 root 权限 |
+| root 密码设置      | 当前 root 密码为空（调试便利），后续需设置密码       |
 | 密码修改         | LUKS 和 PAM 密码绑定后不支持独立修改                  |
 | Nix 用户引导       | Nix 预装后用户如何使用（文档 / 教程）                |
 | SSH 多用户场景   | 非桌面登录场景不做处理（SSH 无 greeter 介入）        |
